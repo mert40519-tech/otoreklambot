@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 
 # ================= AYARLAR =================
 ADMIN_ID = 8342400585  
-BOT_TOKEN = "8548060038:AAFzR_hrHfsT90pmqa3v8aiLiFOycE5pC7U" 
+BOT_TOKEN = "8417810877:AAHUQtsr-O6fUvdKnAMYGZfOvabineenkX4" 
 DATA_FILE = "katre_veritabani.json"
 
 # State Tanımları

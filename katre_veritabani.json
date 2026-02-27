@@ -1,0 +1,33 @@
+{
+    "lisanslar": {
+        "KATRE-0B26EC": {
+            "bitis": "2126-02-03 14:15",
+            "paket": "VIP",
+            "h_limit": 5,
+            "c_limit": 5,
+            "k_cihazlar": [
+                "8342400585"
+            ]
+        }
+    },
+    "users": {
+        "8342400585": {
+            "hesaplar": [
+                {
+                    "phone": "+905400102726",
+                    "api_id": 35787838,
+                    "api_hash": "c97af0783f33486e167bb9954ff6ee8f"
+                }
+            ],
+            "mesaj": "TEMİNATLI SAHA AKTİF\n\n\nORANLAR BAYA DÜŞÜKTÜR\n\nKRİPTO TO İBAN\n\nİBAN TO KRİPTO YAPILIR\n\nDOSTLAR BLOKE GARANTİLİ SAHAMIZ AKTİFTİR ☑️\n\nBANKA İBANI AKTİF☑️\n\nATIŞLARINIZ KARŞILANIR☑️\n\nGüncel iban için @SiberSubeden",
+            "sure": 3,
+            "active": true,
+            "lisans_bitis": "2126-02-03 14:15",
+            "paket": "VIP",
+            "limit": 5,
+            "loglar": [],
+            "kara_liste": [],
+            "aktif_key": "KATRE-0B26EC"
+        }
+    }
+}

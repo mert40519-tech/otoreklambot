@@ -13,8 +13,8 @@ nest_asyncio.apply()
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # ================= AYARLAR =================
-ADMIN_ID = 8342400585  
-BOT_TOKEN = "8417810877:AAHUQtsr-O6fUvdKnAMYGZfOvabineenkX4" 
+ADMIN_ID = 8532799482  
+BOT_TOKEN = "8618683721:AAE7oMXzzWhqzE_2iUCO8DFh_SreGVOwhmk" 
 DATA_FILE = "katre_veritabani.json"
 
 # State Tanımları

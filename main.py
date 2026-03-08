@@ -9,7 +9,7 @@ from telegram.ext import (
 )
 
 # ─── YAPILANDIRMA ────────────────────────────────────────────────────────────
-BOT_TOKEN = "8610004085:AAFItaxPIC65hkD6yElppxJ0v557-9hEc5M"
+BOT_TOKEN "8610004085:AAFWTrYkgdMlP2hlwR9rKX5bUSoBrGR809c"
 # ─────────────────────────────────────────────────────────────────────────────
 
 logging.basicConfig(

@@ -1,301 +1,307 @@
-import json, os, asyncio, logging
+import logging
+import re
+import json
+import os
 from datetime import datetime, timedelta
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
-    MessageHandler, filters, ContextTypes, ConversationHandler
+    Application,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+    ContextTypes,
+    CommandHandler,
 )
-from telethon import TelegramClient
-from telethon.errors import SessionPasswordNeededError
-import nest_asyncio
 
-nest_asyncio.apply()
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+# ─── YAPILANDIRMA ────────────────────────────────────────────────────────────
+BOT_TOKEN = "8610004085:AAFItaxPIC65hkD6yElppxJ0v557-9hEc5M"
+MAX_WARNINGS = 3          # kaç uyarıda mute
+MUTE_DURATION = 30        # dakika
+WARNINGS_FILE = "warnings.json"
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ================= AYARLAR =================
-ADMIN_ID = 8532799482  
-BOT_TOKEN = "8618683721:AAE7oMXzzWhqzE_2iUCO8DFh_SreGVOwhmk" 
-DATA_FILE = "katre_veritabani.json"
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+logger = logging.getLogger(__name__)
 
-# State Tanımları
-WAIT_LICENSE, WAIT_API, WAIT_PHONE, WAIT_CODE, WAIT_2FA, WAIT_MESSAGE, WAIT_DELAY, WAIT_BLACKLIST = range(8)
+# ─── UYARI VERİTABANI (JSON) ─────────────────────────────────────────────────
+def load_warnings() -> dict:
+    if os.path.exists(WARNINGS_FILE):
+        with open(WARNINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
-active_tasks = {}
+def save_warnings(data: dict):
+    with open(WARNINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-# ================= VERİTABANI =================
-def load_db():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f: return json.load(f)
-    return {"lisanslar": {}, "users": {}}
+def get_key(chat_id: int, user_id: int) -> str:
+    return f"{chat_id}:{user_id}"
 
-def save_db(db):
-    with open(DATA_FILE, "w", encoding="utf-8") as f: json.dump(db, f, indent=4, ensure_ascii=False)
+def get_warnings(chat_id: int, user_id: int) -> int:
+    data = load_warnings()
+    return data.get(get_key(chat_id, user_id), 0)
 
-db = load_db()
+def add_warning(chat_id: int, user_id: int) -> int:
+    data = load_warnings()
+    key = get_key(chat_id, user_id)
+    data[key] = data.get(key, 0) + 1
+    save_warnings(data)
+    return data[key]
 
-def check_license(u_id):
-    u_id = str(u_id)
-    if u_id in db["users"] and db["users"][u_id].get("lisans_bitis"):
-        bitis = datetime.strptime(db["users"][u_id]["lisans_bitis"], "%Y-%m-%d %H:%M")
-        return bitis > datetime.now()
-    return False
+def remove_warning(chat_id: int, user_id: int) -> int:
+    data = load_warnings()
+    key = get_key(chat_id, user_id)
+    if data.get(key, 0) > 0:
+        data[key] -= 1
+    save_warnings(data)
+    return data.get(key, 0)
 
-# ================= MENÜLER =================
-def menu_main(u_id):
-    u = db["users"].get(str(u_id), {})
-    is_active = u.get("active", False)
-    hesap_sayisi = len(u.get("hesaplar", []))
-    limit = u.get("limit", 0)
-    
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton(f"👤 Hesap Ekle ({hesap_sayisi}/{limit})", callback_data="btn_hesap_ekle")],
-        [InlineKeyboardButton("⏸ Kampanya Durdur" if is_active else "🚀 Kampanya Başlat", callback_data="btn_toggle")],
-        [InlineKeyboardButton("⚙️ Ayarlar", callback_data="btn_ayarlar"), InlineKeyboardButton("📊 Durum", callback_data="btn_durum")],
-        [InlineKeyboardButton("🚫 Kara Liste", callback_data="btn_karaliste"), InlineKeyboardButton("📋 Loglar", callback_data="btn_loglar")],
-        [InlineKeyboardButton("🔑 Lisans Bilgisi", callback_data="btn_lisans_bilgi")]
+def reset_warnings(chat_id: int, user_id: int):
+    data = load_warnings()
+    key = get_key(chat_id, user_id)
+    data[key] = 0
+    save_warnings(data)
+
+# ─── REGEX: GRUP/KANAL LİNKİ AMA KULLANICI ADI DEĞİL ────────────────────────
+# t.me/xxx  veya  @xxx  formatlarını yakalar.
+# Kullanıcı adları genellikle 5-32 karakter, grup/kanal linkleri de aynı formatta.
+# Telegram'da grup/kanal ile kullanıcı adını ayırt etmenin kesin yolu API çağrısıdır.
+# Bu bot: mesajda t.me/ veya @ ile başlayan HERHANGİ bir linki yakalar,
+# ardından Telegram API'si üzerinden bunun bir grup/kanal mı yoksa kullanıcı mı olduğunu kontrol eder.
+
+LINK_PATTERN = re.compile(
+    r"(?:https?://)?t\.me/([a-zA-Z][a-zA-Z0-9_]{3,})|@([a-zA-Z][a-zA-Z0-9_]{4,})",
+    re.IGNORECASE,
+)
+
+async def is_group_or_channel(username: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Verilen kullanıcı adının bir grup veya kanal olup olmadığını kontrol eder."""
+    try:
+        chat = await context.bot.get_chat(f"@{username}")
+        return chat.type in ("group", "supergroup", "channel")
+    except Exception:
+        # Bulunamazsa ya da hata olursa güvenli tarafta kal → uyarma
+        return False
+
+async def is_admin(chat_id: int, user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        return member.status in ("administrator", "creator")
+    except Exception:
+        return False
+
+# ─── ANA MESAJ HANDLER ───────────────────────────────────────────────────────
+async def check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message or not message.text:
+        return
+
+    chat_id = message.chat_id
+    user = message.from_user
+    if not user:
+        return
+
+    # Adminleri atla
+    if await is_admin(chat_id, user.id, context):
+        return
+
+    # Linki ara
+    matches = LINK_PATTERN.findall(message.text)
+    if not matches:
+        return
+
+    # Her eşleşme için grup/kanal mı kontrol et
+    found_illegal = False
+    for m in matches:
+        username = m[0] or m[1]  # t.me/xxx → m[0], @xxx → m[1]
+        if await is_group_or_channel(username, context):
+            found_illegal = True
+            break
+
+    if not found_illegal:
+        return
+
+    # Mesajı sil
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.warning(f"Mesaj silinemedi: {e}")
+        return
+
+    # Uyarı ekle
+    warn_count = add_warning(chat_id, user.id)
+    remaining = MAX_WARNINGS - warn_count
+
+    user_mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+
+    if warn_count >= MAX_WARNINGS:
+        # 30 dakika mute
+        until = datetime.now() + timedelta(minutes=MUTE_DURATION)
+        try:
+            await context.bot.restrict_chat_member(
+                chat_id,
+                user.id,
+                permissions=ChatPermissions(can_send_messages=False),
+                until_date=until,
+            )
+        except Exception as e:
+            logger.warning(f"Mute uygulanamadı: {e}")
+
+        reset_warnings(chat_id, user.id)
+
+        text = (
+            f"🚫 {user_mention} grupta/kanalda link paylaştığı için "
+            f"<b>{MUTE_DURATION} dakika susturuldu!</b>\n\n"
+            f"⚠️ Grup veya kanal linkleri paylaşmak yasaktır."
+        )
+        await context.bot.send_message(chat_id, text, parse_mode="HTML")
+        return
+
+    # Normal uyarı mesajı + admin butonu
+    text = (
+        f"⚠️ {user_mention}, grup veya kanal linki paylaştığın için mesajın silindi!\n\n"
+        f"📊 Uyarı: <b>{warn_count}/{MAX_WARNINGS}</b>\n"
+        f"{'🔴' * warn_count}{'⚪' * remaining}\n\n"
+        f"{'🔔 Son uyarın! Bir daha link atarsan susturulacaksın!' if warn_count == MAX_WARNINGS - 1 else ''}"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                f"✅ Uyarıyı Kaldır ({warn_count} → {warn_count - 1})",
+                callback_data=f"remove_warn:{chat_id}:{user.id}:{user.first_name}",
+            )
+        ]
     ])
 
-def menu_ayarlar():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📝 Mesaj Metni Belirle", callback_data="btn_set_msg")],
-        [InlineKeyboardButton("⏱ Bekleme Süresi Ayarla", callback_data="btn_set_time")],
-        [InlineKeyboardButton("⬅️ Ana Menüye Dön", callback_data="btn_ana_menu")]
-    ])
+    await context.bot.send_message(
+        chat_id, text, parse_mode="HTML", reply_markup=keyboard
+    )
 
-# ================= REKLAM DÖNGÜSÜ =================
-async def reklam_motoru(u_id, hesap, chat_id, bot_app):
-    u_id = str(u_id)
-    phone = hesap["phone"]
-    client = TelegramClient(f"sessions/{u_id}_{phone}", int(hesap["api_id"]), hesap["api_hash"])
-    try:
-        await client.connect()
-        while db["users"][u_id]["active"]:
-            u_data = db["users"][u_id]
-            basarili, basarisiz = 0, 0
-            async for dialog in client.iter_dialogs():
-                if not db["users"][u_id]["active"]: break
-                if dialog.is_group and str(dialog.id) not in u_data["kara_liste"] and str(dialog.name) not in u_data["kara_liste"]:
-                    try:
-                        await client.send_message(dialog.id, u_data["mesaj"])
-                        basarili += 1
-                        await asyncio.sleep(2)
-                    except: basarisiz += 1
-            
-            zaman = datetime.now().strftime('%H:%M')
-            log_text = f"<b>[{zaman}] {phone}:</b> {basarili} Başarılı, {basarisiz} Hata."
-            u_data["loglar"].append(log_text)
-            if len(u_data["loglar"]) > 10: u_data["loglar"].pop(0)
-            save_db(db)
-            await bot_app.bot.send_message(chat_id=chat_id, text=f"ℹ️ {log_text}", parse_mode="HTML")
-            
-            for _ in range(u_data["sure"] * 60):
-                if not db["users"][u_id]["active"]: break
-                await asyncio.sleep(1)
-    finally: await client.disconnect()
-
-# ================= ADMİN KOMUTLARI =================
-async def cmd_keyuret(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        sa, gu, ay, yi, paket_adi, cihaz_limiti = context.args
-        paketler = {"bronz": 1, "elmas": 3, "vip": 5}
-        p_name = paket_adi.lower()
-        if p_name not in paketler: return
-        
-        new_key = f"KATRE-{os.urandom(3).hex().upper()}"
-        bitis = datetime.now() + timedelta(days=int(gu)+(int(ay)*30)+(int(yi)*365), hours=int(sa))
-        db["lisanslar"][new_key] = {"bitis": bitis.strftime("%Y-%m-%d %H:%M"), "paket": p_name.upper(), "h_limit": paketler[p_name], "c_limit": int(cihaz_limiti), "k_cihazlar": []}
-        save_db(db)
-        await update.message.reply_text(f"✅ <b>Key Üretildi:</b>\n<code>{new_key}</code>\n💎 <b>Paket:</b> {p_name.upper()}\n👥 <b>Cihaz:</b> {cihaz_limiti}", parse_mode="HTML")
-    except:
-        await update.message.reply_text("<b>Kullanım:</b> /keyuret saat gun ay yil paket cihazlimiti", parse_mode="HTML")
-
-async def cmd_keysil(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
-    try:
-        key = context.args[0]
-        if key in db["lisanslar"]:
-            del db["lisanslar"][key]; save_db(db)
-            await update.message.reply_text("✅ Key silindi.")
-    except: pass
-
-# ================= ANA CALLBACK HANDLER =================
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ─── CALLBACK: UYARI KALDIR ──────────────────────────────────────────────────
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    u_id = str(query.from_user.id)
-    data = query.data
     await query.answer()
 
-    if data == "btn_ana_menu":
-        await query.edit_message_text("🤖 <b>KATRE Ana Menü</b>", reply_markup=menu_main(u_id), parse_mode="HTML")
-        return ConversationHandler.END
+    data = query.data
+    if not data.startswith("remove_warn:"):
+        return
 
-    elif data == "btn_lisans_bilgi":
-        u = db["users"].get(u_id, {})
-        txt = (f"🔑 <b>LİSANS BİLGİSİ</b>\n\n<b>Key:</b> <code>{u.get('aktif_key','Yok')}</code>\n"
-               f"<b>Paket:</b> {u.get('paket','Yok')}\n<b>Hesap Limiti:</b> {u.get('limit',0)}\n"
-               f"<b>Bitiş:</b> {u.get('lisans_bitis','Yok')}")
-        await query.message.reply_text(txt, parse_mode="HTML", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Geri", callback_data="btn_ana_menu")]]))
-        return ConversationHandler.END
+    # Sadece adminler kullanabilir
+    admin_user = query.from_user
+    _, chat_id_str, target_id_str, target_name = data.split(":", 3)
+    chat_id = int(chat_id_str)
+    target_id = int(target_id_str)
 
-    elif data == "btn_loglar":
-        logs = "\n".join(db["users"][u_id]["loglar"]) if db["users"][u_id]["loglar"] else "<i>Log yok.</i>"
-        await query.message.reply_text(f"📋 <b>LOGLAR</b>\n\n{logs}", parse_mode="HTML")
+    if not await is_admin(chat_id, admin_user.id, context):
+        await query.answer("❌ Bu butonu sadece adminler kullanabilir!", show_alert=True)
+        return
 
-    elif data == "btn_karaliste":
-        kl = "\n".join(db["users"][u_id]["kara_liste"]) if db["users"][u_id]["kara_liste"] else "<i>Liste boş.</i>"
-        kb = [[InlineKeyboardButton("➕ Ekle", callback_data="btn_kl_ekle"), InlineKeyboardButton("🗑 Temizle", callback_data="btn_kl_temizle")], [InlineKeyboardButton("⬅️ Geri", callback_data="btn_ana_menu")]]
-        await query.edit_message_text(f"🚫 <b>KARA LİSTE</b>\n\n{kl}", reply_markup=InlineKeyboardMarkup(kb), parse_mode="HTML")
+    new_count = remove_warning(chat_id, target_id)
+    admin_mention = f'<a href="tg://user?id={admin_user.id}">{admin_user.first_name}</a>'
+    target_mention = f'<a href="tg://user?id={target_id}">{target_name}</a>'
 
-    elif data == "btn_kl_ekle":
-        await query.message.reply_text("🚫 Engellenecek grup ID veya ismini yazın:")
-        return WAIT_BLACKLIST
-
-    elif data == "btn_kl_temizle":
-        db["users"][u_id]["kara_liste"] = []; save_db(db)
-        await query.message.reply_text("✅ Temizlendi.")
-
-    elif data == "btn_ayarlar":
-        await query.edit_message_text("⚙️ <b>AYARLAR</b>", reply_markup=menu_ayarlar(), parse_mode="HTML")
-
-    elif data == "btn_toggle":
-        u = db["users"][u_id]
-        if not u["active"]:
-            if not u["hesaplar"] or u["mesaj"] == "Belirlenmedi":
-                await query.message.reply_text("❌ Önce hesap ekleyin ve mesaj ayarlayın!")
-                return
-            u["active"] = True; save_db(db)
-            active_tasks[u_id] = [asyncio.create_task(reklam_motoru(u_id, h, query.message.chat_id, context.application)) for h in u["hesaplar"]]
-            await query.edit_message_text("🚀 <b>Kampanya Başladı!</b>", reply_markup=menu_main(u_id), parse_mode="HTML")
-        else:
-            u["active"] = False; save_db(db)
-            if u_id in active_tasks:
-                for t in active_tasks[u_id]: t.cancel()
-            await query.edit_message_text("⏸ <b>Kampanya Durduruldu.</b>", reply_markup=menu_main(u_id), parse_mode="HTML")
-
-    elif data == "btn_hesap_ekle":
-        if len(db["users"][u_id]["hesaplar"]) >= db["users"][u_id]["limit"]:
-            await query.message.reply_text("⚠️ Paket limitiniz doldu!")
-            return ConversationHandler.END
-        await query.message.reply_text("ℹ️ <b>API_ID API_HASH</b> gönderin:", parse_mode="HTML")
-        return WAIT_API
-
-    elif data == "btn_set_msg":
-        await query.message.reply_text("💬 Reklam mesajınızı yazın:")
-        return WAIT_MESSAGE
-
-    elif data == "btn_set_time":
-        await query.message.reply_text("⏱ Kaç dakika beklensin? (Sadece sayı):")
-        return WAIT_DELAY
-
-    elif data == "btn_lisans_gir":
-        await query.message.reply_text("🔑 Lisans anahtarınızı gönderin:")
-        return WAIT_LICENSE
-
-# ================= GİRİŞ FONKSİYONLARI =================
-async def input_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    key = update.message.text.strip()
-    u_id = str(update.effective_user.id)
-    if key in db["lisanslar"]:
-        l = db["lisanslar"][key]
-        if u_id not in l["k_cihazlar"]:
-            if len(l["k_cihazlar"]) >= l["c_limit"]:
-                await update.message.reply_text("❌ Bu keyin cihaz limiti dolmuş!")
-                return ConversationHandler.END
-            l["k_cihazlar"].append(u_id)
-        db["users"][u_id].update({"lisans_bitis": l["bitis"], "paket": l["paket"], "limit": l["h_limit"], "aktif_key": key})
-        save_db(db); await update.message.reply_text("✅ Lisans Aktif!"); return ConversationHandler.END
-    await update.message.reply_text("❌ Geçersiz Key!"); return WAIT_LICENSE
-
-async def input_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    phone = update.message.text.strip()
-    u_id = str(update.effective_user.id)
-    context.user_data['temp_phone'] = phone
-    client = TelegramClient(f"sessions/{u_id}_{phone}", context.user_data['temp_api_id'], context.user_data['temp_api_hash'])
-    await client.connect()
-    try:
-        sent = await client.send_code_request(phone)
-        context.user_data['phone_code_hash'] = sent.phone_code_hash
-        await update.message.reply_text("📩 Kodu <b>1-2-3-4-5</b> şeklinde girin:", parse_mode="HTML")
-        return WAIT_CODE
-    except Exception as e: await update.message.reply_text(f"Hata: {e}"); return ConversationHandler.END
-    finally: await client.disconnect()
-
-async def input_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    clean_code = update.message.text.replace("-", "").replace(" ", "")
-    u_id = str(update.effective_user.id)
-    phone = context.user_data['temp_phone']
-    client = TelegramClient(f"sessions/{u_id}_{phone}", context.user_data['temp_api_id'], context.user_data['temp_api_hash'])
-    await client.connect()
-    try:
-        await client.sign_in(phone, clean_code, phone_code_hash=context.user_data['phone_code_hash'])
-        db["users"][u_id]["hesaplar"].append({"phone": phone, "api_id": context.user_data['temp_api_id'], "api_hash": context.user_data['temp_api_hash']})
-        save_db(db); await update.message.reply_text("✅ Hesap Eklendi!", reply_markup=menu_main(u_id)); return ConversationHandler.END
-    except SessionPasswordNeededError:
-        await update.message.reply_text("🔐 2FA Şifresi girin:"); return WAIT_2FA
-    except Exception as e: await update.message.reply_text(f"Hata: {e}"); return ConversationHandler.END
-    finally: await client.disconnect()
-
-# ================= DİĞER INPUTLAR =================
-async def input_api(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        aid, ahash = update.message.text.split()
-        context.user_data['temp_api_id'], context.user_data['temp_api_hash'] = int(aid), ahash
-        await update.message.reply_text("📞 Telefon No (+90...):"); return WAIT_PHONE
-    except: return WAIT_API
-
-async def input_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db["users"][str(update.effective_user.id)]["mesaj"] = update.message.text
-    save_db(db); await update.message.reply_text("✅ Mesaj Kaydedildi."); return ConversationHandler.END
-
-async def input_delay(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        db["users"][str(update.effective_user.id)]["sure"] = int(update.message.text)
-        save_db(db); await update.message.reply_text("✅ Süre Kaydedildi."); return ConversationHandler.END
-    except: return WAIT_DELAY
-
-async def input_blacklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db["users"][str(update.effective_user.id)]["kara_liste"].append(update.message.text)
-    save_db(db); await update.message.reply_text("✅ Kara listeye eklendi."); return ConversationHandler.END
-
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u_id = str(update.effective_user.id)
-    if u_id not in db["users"]:
-        db["users"][u_id] = {"hesaplar": [], "mesaj": "Belirlenmedi", "sure": 5, "active": False, "lisans_bitis": None, "paket": "Yok", "limit": 0, "loglar": [], "kara_liste": [], "aktif_key": "Yok"}
-        save_db(db)
-    
-    u = db["users"][u_id]
-    if not check_license(u_id):
-        await update.message.reply_text("⛔️ <b>KATRE Reklam Botu</b>\nLisansınız aktif değil.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔑 Lisans Gir", callback_data="btn_lisans_gir")]]), parse_mode="HTML")
-        return ConversationHandler.END
-
-    txt = (f"🚀 <b>KATRE PRO REKLAM BOTU</b>\n\n"
-           f"💎 <b>Paket:</b> {u['paket']}\n"
-           f"👤 <b>Hesap:</b> {len(u['hesaplar'])}/{u['limit']}\n"
-           f"📅 <b>Bitiş:</b> <code>{u['lisans_bitis']}</code>")
-    await update.message.reply_text(txt, reply_markup=menu_main(u_id), parse_mode="HTML")
-    return ConversationHandler.END
-
-def main():
-    if not os.path.exists("sessions"): os.makedirs("sessions")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    
-    conv = ConversationHandler(
-        entry_points=[CommandHandler("start", cmd_start), CallbackQueryHandler(callback_handler)],
-        states={
-            WAIT_LICENSE: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_license)],
-            WAIT_API: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_api)],
-            WAIT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_phone)],
-            WAIT_CODE: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_code)],
-            WAIT_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_message)],
-            WAIT_DELAY: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_delay)],
-            WAIT_BLACKLIST: [MessageHandler(filters.TEXT & ~filters.COMMAND, input_blacklist)]
-        },
-        fallbacks=[CommandHandler("start", cmd_start), CallbackQueryHandler(callback_handler)]
+    new_text = (
+        f"✅ {admin_mention}, {target_mention} adlı kullanıcının bir uyarısını kaldırdı.\n\n"
+        f"📊 Güncel uyarı: <b>{new_count}/{MAX_WARNINGS}</b>"
     )
-    app.add_handler(CommandHandler("keyuret", cmd_keyuret))
-    app.add_handler(CommandHandler("keysil", cmd_keysil))
-    app.add_handler(conv)
-    app.run_polling()
 
-if __name__ == "__main__": main()
+    await query.edit_message_text(new_text, parse_mode="HTML")
+
+# ─── /uyarilar KOMUTU ────────────────────────────────────────────────────────
+async def cmd_warnings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message:
+        return
+
+    chat_id = message.chat_id
+    requester = message.from_user
+
+    if not await is_admin(chat_id, requester.id, context):
+        await message.reply_text("❌ Bu komutu sadece adminler kullanabilir.")
+        return
+
+    target = None
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+    elif context.args:
+        try:
+            uid = int(context.args[0])
+            member = await context.bot.get_chat_member(chat_id, uid)
+            target = member.user
+        except Exception:
+            await message.reply_text("❌ Kullanıcı bulunamadı.")
+            return
+
+    if not target:
+        await message.reply_text("ℹ️ Kullanım: /uyarilar (birine yanıt verin veya kullanıcı ID yazın)")
+        return
+
+    count = get_warnings(chat_id, target.id)
+    remaining = MAX_WARNINGS - count
+    mention = f'<a href="tg://user?id={target.id}">{target.first_name}</a>'
+
+    text = (
+        f"📊 {mention} uyarı durumu:\n\n"
+        f"{'🔴' * count}{'⚪' * remaining} — <b>{count}/{MAX_WARNINGS}</b>\n\n"
+        f"{'⚠️ Bir sonraki uyarıda susturulacak!' if count == MAX_WARNINGS - 1 else ''}"
+    )
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "✅ Uyarıyı Kaldır",
+                callback_data=f"remove_warn:{chat_id}:{target.id}:{target.first_name}",
+            )
+        ]
+    ])
+
+    await message.reply_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+# ─── /resetuyari KOMUTU ──────────────────────────────────────────────────────
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    message = update.message
+    if not message:
+        return
+
+    chat_id = message.chat_id
+    requester = message.from_user
+
+    if not await is_admin(chat_id, requester.id, context):
+        await message.reply_text("❌ Bu komutu sadece adminler kullanabilir.")
+        return
+
+    target = None
+    if message.reply_to_message:
+        target = message.reply_to_message.from_user
+
+    if not target:
+        await message.reply_text("ℹ️ Kullanım: /resetuyari (birine yanıt verin)")
+        return
+
+    reset_warnings(chat_id, target.id)
+    mention = f'<a href="tg://user?id={target.id}">{target.first_name}</a>'
+    await message.reply_text(
+        f"🔄 {mention} adlı kullanıcının tüm uyarıları sıfırlandı.",
+        parse_mode="HTML",
+    )
+
+# ─── MAIN ────────────────────────────────────────────────────────────────────
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("uyarilar", cmd_warnings))
+    app.add_handler(CommandHandler("resetuyari", cmd_reset))
+    app.add_handler(CallbackQueryHandler(handle_callback))
+    app.add_handler(
+        MessageHandler(filters.TEXT & filters.ChatType.GROUPS, check_message)
+    )
+
+    logger.info("Bot başlatıldı...")
+    app.run_polling(allowed_updates=["message", "callback_query"])
+
+if __name__ == "__main__":
+    main()

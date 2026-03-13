@@ -1,6 +1,6 @@
 """
 TikTok Çekim Bot - Telegram Email Scraper
-==========================================
+=======================================
 Gereksinimler:
     pip install python-telegram-bot==20.7 apify-client
 

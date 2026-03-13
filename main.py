@@ -37,9 +37,9 @@ from apify_client import ApifyClient
 # ─────────────────────────────────────────────
 # YAPILANDIRMA  ← Sadece bu 3 satırı doldur
 # ─────────────────────────────────────────────
-BOT_TOKEN   = "BURAYA_BOT_TOKEN_YAZ"     # @BotFather'dan al
-APIFY_TOKEN = "BURAYA_APIFY_TOKEN_YAZ"   # apify.com → console → integrations
-ADMIN_IDS   = [123456789]                # Kendi Telegram ID'n (@userinfobot ile bak)
+BOT_TOKEN   = "8355587538:AAFq6bCO-KHzkMEks2Jiu3dEW3PzSBnVesA"     # @BotFather'dan al
+APIFY_TOKEN = "apify_api_bNr3IzX2a9SC8ihxX8JHF6OVIq2LW5101p4J"   # apify.com → console → integrations
+ADMIN_IDS   = [7672180974]                # Kendi Telegram ID'n (@userinfobot ile bak)
 
 # Kaç profil taransın (Apify kredi harcar)
 DEFAULT_PROFILES_PER_HASHTAG = 100

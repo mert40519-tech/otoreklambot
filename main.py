@@ -42,7 +42,7 @@ APIFY_TOKEN = "apify_api_bNr3IzX2a9SC8ihxX8JHF6OVIq2LW5101p4J"   # apify.com →
 ADMIN_IDS   = [7672180974]                # Kendi Telegram ID'n (@userinfobot ile bak)
 
 # Kaç profil taransın (Apify kredi harcar)
-DEFAULT_PROFILES_PER_HASHTAG = 100
+DEFAULT_PROFILES_PER_HASHTAG = 10
 
 # ─────────────────────────────────────────────
 # VERİ KATMANI  (JSON dosya tabanlı)

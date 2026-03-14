@@ -37,7 +37,7 @@ from apify_client import ApifyClient
 # ─────────────────────────────────────────────
 # YAPILANDIRMA  ← Sadece bu 3 satırı doldur
 # ─────────────────────────────────────────────
-BOT_TOKEN   = "8355587538:AAFq6bCO-KHzkMEks2Jiu3dEW3PzSBnVesA"     # @BotFather'dan al
+BOT_TOKEN   = "8355587538:AAFq6bCO-KHzkMEks2Jiu3dEW3Pz     # @BotFather'dan al
 APIFY_TOKEN = "apify_api_i1TvRvPdcH6FfeCydLoXls8iBAL6Mx1bbzDZ"   # apify.com → console → integrations
 ADMIN_IDS   = [7672180974]                # Kendi Telegram ID'n (@userinfobot ile bak)
 
